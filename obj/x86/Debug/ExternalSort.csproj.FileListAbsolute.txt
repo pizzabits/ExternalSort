@@ -1,5 +1,0 @@
-D:\Studies\Implementing Database Systems\ExternalSort\bin\Debug\ExternalSort.exe
-D:\Studies\Implementing Database Systems\ExternalSort\bin\Debug\ExternalSort.pdb
-D:\Studies\Implementing Database Systems\ExternalSort\obj\x86\Debug\ResolveAssemblyReference.cache
-D:\Studies\Implementing Database Systems\ExternalSort\obj\x86\Debug\ExternalSort.exe
-D:\Studies\Implementing Database Systems\ExternalSort\obj\x86\Debug\ExternalSort.pdb

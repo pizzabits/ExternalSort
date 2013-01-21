@@ -41,11 +41,9 @@ namespace ExternalSort
             int max = 10000000;
             int fields = 3;
             int fieldToSortBy = 2;
-            int records = 400000;
-            int bufferPages = 9;
-            int recordsPerPage = 1000;
-
-            Debug.Assert(bufferPages > 2, "Buffer pages must be 3 or more!");
+            int records = 10000;
+            int bufferPages = 3;
+            int recordsPerPage = 500;
 
             Console.WriteLine("Creating an unsorted random file containing {0} records,\neach record contains {1} fields, " +
                                 "and the values are between {2} and {3}", records, fields, min, max);
@@ -53,11 +51,11 @@ namespace ExternalSort
             Console.WriteLine("The unsorted file was created successfully and can found at: {0}", filename);
             PressAnyKeyToContinue();
 
-            ExternalSort bp = new ExternalSort(bufferPages, recordsPerPage, fields, fieldToSortBy);
+            ExternalSort bp = new ExternalSort(bufferPages, recordsPerPage);
             Console.WriteLine("\nStarting a sort on field #{0} using external sort with {1} buffer pages, each page may contain {2} records",
                 fieldToSortBy, bufferPages, recordsPerPage);
 
-            String sortedFilename = bp.Sort(filename, fields);
+            String sortedFilename = bp.Sort(filename, fieldToSortBy, fields);
 
             Console.WriteLine("\nThe sorted file was created successfully and can be found at: {0}", sortedFilename);
             PressAnyKeyToContinue();

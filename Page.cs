@@ -6,61 +6,57 @@ using System.IO;
 
 namespace ExternalSort
 {
-    /// <summary>
-    /// Defines a page of multiple <typeparamref name="Record"/>.
-    /// Able to parse the fields of an input string array,
-    /// or create an empty page.
-    /// The page, provided a comparer, can sort the records within.
-    /// Also can be written, provided a stream writer.
-    /// </summary>
     public class Page
     {
-        public int FieldCount { get; private set; }
-        public Record[] Records { get; private set; }
+        private Record[] _records;
+        private int _numberOfFields;
+        public int FieldCount { get { return _numberOfFields; } }
+        public Record[] Records { get { return _records; } }
+        public int RecordOffset { get; set; }
         
         public Page(int fieldCount, int recordCount)
         {
-            Records = new Record[recordCount];
-            FieldCount = fieldCount;
+            _records = new Record[recordCount];
+            _numberOfFields = fieldCount;
         }
 
-        public Page(string[] records)
+        public Page(int fieldToSortBy, string[] records)
         {
             int i;
             for (i = 0; i < records.Length && records[i] != null; i++)
             {
                 string[] fieldsToParse = records[i].Split(',');
-                if (Records == null)
+                if (_records == null)
                 {
-                    FieldCount = fieldsToParse.Length;
-                    Records = new Record[records.Length];
+                    _numberOfFields = fieldsToParse.Length;
+                    _records = new Record[records.Length];
                 }
 
-                int[] fields = new int[FieldCount];
+                int[] fields = new int[_numberOfFields];
 
-                for (int j = 0; j < FieldCount; j++)
+                for (int j = 0; j < _numberOfFields; j++)
                 {
                     fields[j] = int.Parse(fieldsToParse[j]);
                 }
 
-                Records[i] = new Record(fields);
+                _records[i] = new Record(fieldToSortBy ,fields);
             }
         }
 
         public Page(Page page)
         {
-            Records = page.Records;
-            FieldCount = page.FieldCount;
+            _records = page.Records;
+            _numberOfFields = page.FieldCount;
         }
 
-        internal void Sort(IComparer<Record> comparer)
+        internal void Sort(int indexField)
         {
-            Array.Sort(Records, comparer);
+            Array.Sort(_records);
         }
 
         internal void Print()
         {
-            foreach (var item in Records)
+            foreach (var item in _records)
             {
                 Console.WriteLine(item.ToString());
             }
@@ -68,9 +64,9 @@ namespace ExternalSort
 
         internal IEnumerable<String> ProduceStringLinesRepresentation()
         {
-            for (int i = 0; i < Records.Length && Records[i] != null; i++)
+            for (int i = 0; i < _records.Length && _records[i] != null; i++)
             {
-                yield return Records[i].ToString();
+                yield return _records[i].ToString();
             }
         }
 

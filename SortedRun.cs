@@ -6,10 +6,6 @@ using System.IO;
 
 namespace ExternalSort
 {
-    /// <summary>
-    /// Defines a sorted run on the disk.
-    /// Can be used to read or write.
-    /// </summary>
     public class SortedRun
     {
         public String Filename;

@@ -7,211 +7,176 @@ using System.IO;
 
 namespace ExternalSort
 {
-    /// <summary>
-    /// The main external sort class.
-    /// Uses an iteration system that contains sortedruns produced in each iteration.
-    /// Manages a pool of pages - the buffer pool,
-    /// by providing B-1 buffer pages for input and one output page.
-    /// <remarks>The process will create sorted runs in the system's temporary directory.</remarks>
-    /// </summary>
     public class ExternalSort
     {
         private int _numberOfBufferPages;
         private int _pageSizeInRecords;
-        private int _numberOfFieldsInRecord;
-        private int _fieldToSortBy;
         private int _iteration;
         private Page[] _pool;
-        private int[] _pointers;
         private Dictionary<int, List<SortedRun>> _iterationToSortedruns;
-        private RecordComparer _recordComparer;
-        private int _sortedrunsIndexInLastIteration;
-        private int _sortedrunsUsedInCurrentIteration;
-        private int _producedSortedruns;
-        private int _pageCount = 0;
 
-        public ExternalSort(int bufferPages, int pageSizeInRecords, int fieldCount, int fieldToSortBy)
+        public ExternalSort(int bufferPages, int pageSizeInRecords)
         {
             Debug.Assert(bufferPages > 1, "Buffer pages must more than one page!");
             _numberOfBufferPages = bufferPages;
             _pageSizeInRecords = pageSizeInRecords;
-            _numberOfFieldsInRecord = fieldCount;
-            _fieldToSortBy = fieldToSortBy;
             _pool = new Page[_numberOfBufferPages];
-            _recordComparer = new RecordComparer(fieldToSortBy);
         }
 
-        public string Sort(string filename, int fieldCount)
+        public string Sort(string filename, int fieldIndexToSortBy, int fieldCount)
         {
-            FirstIteration(filename);
+            FirstIteration(filename, fieldIndexToSortBy);
+
             while (_iterationToSortedruns[_iteration - 1].Count > 1)
             {
                 Console.WriteLine("\nCommencing iteration {0} \n", _iteration);
-                InitializeNewIteration();
+
+                int sortedrunIndex = 0;
+                int sortedrunsUsed = 0;
+                _pool = new Page[_numberOfBufferPages];
+                    
+                // load the first page of each of the B-1 sortedruns from the last iteration 
+                // and merge sort them using the last page in the buffer pool
+                for (int i = 0; i < _iterationToSortedruns[_iteration - 1].Count; i++)
+                {
+                    if (i == _numberOfBufferPages - 1) // Use only B-1 sortedruns
+                    {
+                        sortedrunsUsed = i;
+                        break;
+                    }
+                    _pool[i] = new Page(fieldIndexToSortBy, ReadPage(_iterationToSortedruns[_iteration - 1][i].GetReader()));
+                }
+
+                // point to current index in each sortedrun and also the buffer page
+                int[] pointers = new int[_numberOfBufferPages];
+                // reset the buffer page to contains 0 records
+                _pool[_numberOfBufferPages - 1] = new Page(fieldCount, _pageSizeInRecords);
+
+                // initialize the current iteration's pages
+                int producedSortedruns = 0;
+                _iterationToSortedruns[_iteration] = new List<SortedRun>();
+                string newSortedrunFilename = Path.GetTempFileName();
+                var sortedRun = new SortedRun();
+                sortedRun.Filename = newSortedrunFilename;
+                sortedRun.GetWriter();
+                _iterationToSortedruns[_iteration].Add(sortedRun);
+
+                int pageCount = 0;
                 bool finishedMergingSet = false;
                 
-                // while there are still sortedruns left in previous iteration
+                // while there are still sortedruns from previous iteration
                 while (!finishedMergingSet)
                 {
-                    finishedMergingSet = IsPoolsEmpty();
+                    finishedMergingSet = true;
+                    for (int i = 0; i < _numberOfBufferPages - 1; i++)
+                    {
+                        if (_pool[i] != null && _pool[i].Records != null && _pool[i].Records[pointers[i]] != null)
+                        {
+                            finishedMergingSet = false;
+                            break;
+                        }
+                    }
                     if (finishedMergingSet)
                     {
-                        ReadNextPages();
+                        // close the latest sortedrun written
+                        _iterationToSortedruns[_iteration][producedSortedruns++].Writer.Close();
 
-                        // check that some sorted runs were read
-                        if (_sortedrunsIndexInLastIteration == _sortedrunsUsedInCurrentIteration)
+                        // load the first page from B-1 sortedruns of the previous iteration
+                        // continuing from the next sortedrun which was not read
+                        sortedrunIndex = sortedrunsUsed;
+                        for (int i = sortedrunsUsed; i < _iterationToSortedruns[_iteration - 1].Count; i++)
+                        {
+                            if (i - sortedrunIndex == (_numberOfBufferPages - 1)) // Use up to B-1 sortedruns
+                            {
+                                break;
+                            }
+                            _pool[i - sortedrunIndex] = new Page(fieldIndexToSortBy, ReadPage(_iterationToSortedruns[_iteration - 1][i].GetReader()));
+                            sortedrunsUsed++;
+                        }
+
+                        // no more sorted runs?
+                        if (sortedrunIndex == sortedrunsUsed)
                         {
                             continue;
                         }
-
-                        // if any of the pages read have records, continue
-                        if (_pool.Take(_numberOfBufferPages - 1).Any(item => item != null && item.Records != null))
-                            finishedMergingSet = false;
-
+                        foreach (var item in _pool.Take(_numberOfBufferPages - 1))
+                        {
+                            if (item != null && item.Records != null)
+                            {
+                                finishedMergingSet = false;
+                            }
+                        }
                         if (finishedMergingSet)
                             continue;
 
                         // there're more sorted runs, prepare a new merged sortedrun
-                        CreateSortedRun();
-                        _pageCount = 0;
+                        String tempFilename = Path.GetTempFileName();
+                        _iterationToSortedruns[_iteration].Add(new SortedRun() { Filename = tempFilename });
+                        pageCount = 0;
                     }
-                    ProduceOneMergedPage();
+
+                    Record smallest = null;
+                    // while the buffer page doesn't exceed
+                    while (pointers[_numberOfBufferPages-1] < _pageSizeInRecords)
+                    {
+                        // initialize the lowest records
+                        smallest = null;
+                        int firstPageThatIsNotEmpty = 0;
+                        // find the first page that is not empty
+                        for (int i = 0; i < _numberOfBufferPages; i++)
+                        {
+                            if (_pool[i] != null && _pool[i].Records != null && _pool[i].Records[pointers[i]] != null)
+                            {
+                                // choose the first non-null record as the smallest
+                                smallest = new Record(_pool[i].Records[pointers[i]]);
+                                firstPageThatIsNotEmpty = i;
+                                break;
+                            }
+                        }
+
+                        // ran out of values?
+                        if (smallest == null)
+                            break;
+
+                        int pageIndexContainingLowestKey = firstPageThatIsNotEmpty;
+                        // search for the smallest key in any of the current pages
+                        for (int i = firstPageThatIsNotEmpty + 1; i < _numberOfBufferPages; i++)
+                        {
+                            if (_pool[i] != null && _pool[i].Records != null 
+                                && _pool[i].Records[pointers[i]] != null 
+                                && _pool[i].Records[pointers[i]].Fields[fieldIndexToSortBy] < smallest[fieldIndexToSortBy])
+                            {
+                                smallest = _pool[i].Records[pointers[i]];
+                                pageIndexContainingLowestKey = i;
+                            }
+                        }
+
+                        // insert the smallest record into the buffer page and increase the page's pointers.
+                        _pool[_numberOfBufferPages - 1].Records[pointers[_numberOfBufferPages-1]] = smallest;
+                        pointers[_numberOfBufferPages-1]++;
+                        pointers[pageIndexContainingLowestKey]++;
+
+                        if (pointers[pageIndexContainingLowestKey] == _pageSizeInRecords)
+                        {
+                            // get the next page of the sortedrun, and start the count over.
+                            _pool[pageIndexContainingLowestKey] = new Page(fieldIndexToSortBy, 
+                                ReadPage(_iterationToSortedruns[_iteration - 1][sortedrunIndex + pageIndexContainingLowestKey].GetReader()));
+
+                            pointers[pageIndexContainingLowestKey] = 0;
+                        }
+                    }
 
                     // completed another page, write it to the current sortedrun in the current iteration
-                    _pool[_numberOfBufferPages - 1].WritePage(_iterationToSortedruns[_iteration][_producedSortedruns].GetWriter());
-                    _pageCount++;
-                    Console.WriteLine("Wrote page {0} of sorted run #{1}", _pageCount, _producedSortedruns);
+                    _pool[_numberOfBufferPages - 1].WritePage(_iterationToSortedruns[_iteration][producedSortedruns].GetWriter());
+                    pageCount++;
+                    Console.WriteLine("Wrote page {0} of sorted run #{1}", pageCount, producedSortedruns);
                     // reset the buffer page to contains 0 records
                     _pool[_numberOfBufferPages - 1] = new Page(fieldCount, _pageSizeInRecords);
-                    _pointers[_numberOfBufferPages - 1] = 0;
+                    pointers[_numberOfBufferPages - 1] = 0;
                 }
                 _iteration++;
             }
             return _iterationToSortedruns.Last().Value.Last().Filename;
-        }
-
-        private void CreateSortedRun()
-        {
-            String tempFilename = Path.GetTempFileName();
-            _iterationToSortedruns[_iteration].Add(new SortedRun() { Filename = tempFilename });
-        }
-
-        private void ReadNextPages()
-        {
-            // close the latest sortedrun written
-            _iterationToSortedruns[_iteration][_producedSortedruns++].Writer.Close();
-
-            // load the first page from B-1 sortedruns of the previous iteration
-            // continuing from the next sortedrun which was not read
-            _sortedrunsIndexInLastIteration = _sortedrunsUsedInCurrentIteration;
-            for (int i = _sortedrunsUsedInCurrentIteration; i < _iterationToSortedruns[_iteration - 1].Count; i++)
-            {
-                if (i - _sortedrunsIndexInLastIteration == (_numberOfBufferPages - 1)) // Use up to B-1 sortedruns
-                {
-                    break;
-                }
-                _pool[i - _sortedrunsIndexInLastIteration] = new Page(ReadPage(_iterationToSortedruns[_iteration - 1][i].GetReader(), _pageSizeInRecords));
-                _sortedrunsUsedInCurrentIteration++;
-            }
-        }
-
-        private void ProduceOneMergedPage()
-        {
-            Record smallest = null;
-            // while the buffer page doesn't exceed
-            while (_pointers[_numberOfBufferPages - 1] < _pageSizeInRecords)
-            {
-                // initialize the lowest records
-                smallest = null;
-                int firstPageThatIsNotEmpty = 0;
-                // find the first page that is not empty and assign the first record
-                for (int i = 0; i < _numberOfBufferPages; i++)
-                {
-                    if (_pool[i] != null && _pool[i].Records != null && _pool[i].Records[_pointers[i]] != null)
-                    {
-                        // choose the first non-null record as the smallest
-                        smallest = new Record(_pool[i].Records[_pointers[i]]);
-                        firstPageThatIsNotEmpty = i;
-                        break;
-                    }
-                }
-
-                // ran out of values?
-                if (smallest == null)
-                    break;
-
-                int pageIndexContainingLowestKey = firstPageThatIsNotEmpty;
-                // search for the smallest key in any of the current pages
-                for (int i = firstPageThatIsNotEmpty + 1; i < _numberOfBufferPages; i++)
-                {
-                    if (_pool[i] != null && _pool[i].Records != null
-                        && _pool[i].Records[_pointers[i]] != null
-                        && _pool[i].Records[_pointers[i]].Fields[_fieldToSortBy] < smallest[_fieldToSortBy])
-                    {
-                        smallest = _pool[i].Records[_pointers[i]];
-                        pageIndexContainingLowestKey = i;
-                    }
-                }
-
-                // insert the smallest record into the buffer page and increase the page's pointer
-                _pool[_numberOfBufferPages - 1].Records[_pointers[_numberOfBufferPages - 1]] = smallest;
-                _pointers[_numberOfBufferPages - 1]++;
-                _pointers[pageIndexContainingLowestKey]++;
-
-                if (_pointers[pageIndexContainingLowestKey] == _pageSizeInRecords)
-                {
-                    // get the next page of the sortedrun
-                    _pool[pageIndexContainingLowestKey] = new Page(
-                        ReadPage(_iterationToSortedruns[_iteration - 1][_sortedrunsIndexInLastIteration + pageIndexContainingLowestKey].GetReader(), _pageSizeInRecords));
-                    // and reset its pointer
-                    _pointers[pageIndexContainingLowestKey] = 0;
-                }
-            }
-        }
-
-        private bool IsPoolsEmpty()
-        {
-            bool empty = true;
-            for (int i = 0; i < _numberOfBufferPages - 1; i++)
-            {
-                // check that there aren't any pages containing records
-                if (_pool[i] != null && _pool[i].Records != null && _pool[i].Records[_pointers[i]] != null)
-                {
-                    // there's a page containing a record
-                    empty = false;
-                    break;
-                }
-            }
-            return empty;
-        }
-
-        private void InitializeNewIteration()
-        {
-            _sortedrunsIndexInLastIteration = 0;
-            _sortedrunsUsedInCurrentIteration = 0;
-            _pool = new Page[_numberOfBufferPages];
-
-            // load the first page of each of the B-1 sortedruns from the last iteration 
-            // and merge sort them using the last page in the buffer pool
-            for (int i = 0; i < _iterationToSortedruns[_iteration - 1].Count; i++)
-            {
-                if (i == _numberOfBufferPages - 1) // Use only B-1 sortedruns
-                {
-                    _sortedrunsUsedInCurrentIteration = i;
-                    break;
-                }
-                _pool[i] = new Page(ReadPage(_iterationToSortedruns[_iteration - 1][i].GetReader(), _pageSizeInRecords));
-            }
-
-            // point to current index in each sortedrun and also the buffer page
-            _pointers = new int[_numberOfBufferPages];
-            // reset the buffer page to contains 0 records
-            _pool[_numberOfBufferPages - 1] = new Page(_numberOfFieldsInRecord, _pageSizeInRecords);
-
-            // initialize the current iteration's pages
-            _producedSortedruns = 0;
-            _iterationToSortedruns[_iteration] = new List<SortedRun>();
-            CreateSortedRun();
         }
 
         /// <summary>
@@ -241,7 +206,7 @@ namespace ExternalSort
             _pool = null;
             GC.Collect();
 
-            allRecordsInPool.Sort(_recordComparer);
+            allRecordsInPool.Sort();
             return allRecordsInPool;
         }
 
@@ -251,7 +216,8 @@ namespace ExternalSort
         /// and writes them as sortedruns to be used in the next iteration.
         /// </summary>
         /// <param name="filename">The input file full path</param>
-        private void FirstIteration(string filename)
+        /// <param name="fieldIndexToSortBy">The field of each record, on which the sort will work</param>
+        private void FirstIteration(string filename, int fieldIndexToSortBy)
         {
             double actualPages = Math.Ceiling(File.ReadAllLines(filename).Length / (double)_pageSizeInRecords);
             Debug.Assert(_numberOfBufferPages < actualPages, string.Format(
@@ -275,7 +241,7 @@ namespace ExternalSort
                     // check if enough records to fill a page
                     if (lineCount > 0 && lineCount % _pageSizeInRecords == 0)
                     {
-                        _pool[pageCount] = new Page(records);
+                        _pool[pageCount] = new Page(fieldIndexToSortBy, records);
                         pageCount++;
                         records = new String[_pageSizeInRecords];
                         lineCount = 0;
@@ -311,7 +277,7 @@ namespace ExternalSort
             // check for remaining records and add them too
             if (records.First() != null)
             {
-                _pool[pageCount] = new Page(records);
+                _pool[pageCount] = new Page(fieldIndexToSortBy, records);
                 pageCount++;
             }
 
@@ -376,14 +342,14 @@ namespace ExternalSort
         /// </summary>
         /// <param name="sr"></param>
         /// <returns>An array of strings containing the records.</returns>
-        private static String[] ReadPage(StreamReader sr, int numberOfRecords)
+        public String[] ReadPage(StreamReader sr)
         {
             int lineCount = 0;
-            String[] records = new string[numberOfRecords];
+            String[] records = new string[_pageSizeInRecords];
             while (!sr.EndOfStream)
             {
                 records[lineCount++] = sr.ReadLine();
-                if (lineCount > 0 && lineCount % numberOfRecords == 0)
+                if (lineCount > 0 && lineCount % _pageSizeInRecords == 0)
                 {
                     return records;
                 }

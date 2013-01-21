@@ -6,21 +6,21 @@ using System.Diagnostics;
 
 namespace ExternalSort
 {
-    /// <summary>
-    /// Defines a record of fields typed integer.
-    /// </summary>
-    public class Record
+    public class Record : IComparable
     {
         private int[] _fields;
         public int[] Fields { get { return _fields; } }
+        public int FieldToSortBy { get; set; }
 
-        public Record(params int[] fields)
+        public Record(int fieldToSortBy, params int[] fields)
         {
+            FieldToSortBy = fieldToSortBy;
             _fields = fields;
         }
 
         public Record(Record record)
         {
+            FieldToSortBy = record.FieldToSortBy;
             _fields = record.Fields;
         }
 
@@ -38,6 +38,13 @@ namespace ExternalSort
         public int this[int index]
         {
             get { return _fields[index]; }
+        }
+
+        public int CompareTo(object obj)
+        {
+            Record other = obj as Record;
+            Debug.Assert(other != null, "Cannot compare a Record type to a different type!");
+            return this[FieldToSortBy] - other[other.FieldToSortBy];
         }
     }
 }
